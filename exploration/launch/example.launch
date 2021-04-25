@@ -1,0 +1,19 @@
+<launch>
+    <!-- Feel free to add some command line arguments and parameters -->
+    
+    <node name="path_planner" pkg="exploration" type="planner.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>
+    </node>
+    <node name="frontier_explorer" pkg="exploration" type="frontier.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>
+    </node>
+    <node name="path_follower" pkg="exploration" type="path_follower.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>
+    </node>    
+    <node name="explorers" pkg="exploration" type="explorer.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>     
+    </node>  
+    <include file="$(find dummy_grid)/launch/dummy_grid.launch"/>
+</launch>   
+        
+
