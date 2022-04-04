@@ -1,0 +1,86 @@
+<launch>
+    <!--
+        IMPORTANT: This file is not supposed to be changed by students.
+    -->
+    <arg name="gui" default="false"/>
+    <arg name="rviz" default="true"/>
+    <arg name="model" default="burger_rgbd" doc="{burger_rgbd, waffle, waffle_pi}"/>
+    <arg name="robot_margin" default="0.1"/>  <!-- Use 10cm safety margin by default. -->
+    <arg if="$(eval model in ('burger_rgbd', 'burger'))" name="robot_radius" default="$(eval 0.105 + robot_margin)"/>
+    <arg if="$(eval model in ('waffle', 'waffle_pi'))" name="robot_radius" default="$(eval 0.22 + robot_margin)"/>
+    <arg name="robot_diameter" value="$(eval 2 * robot_radius)"/>
+
+    <arg name="world" default="stage_4" doc="{autorace, house, stage_1, stage_2, stage_3, stage_4, world}"/>
+    <arg if="$(eval world == 'world')" name="spawn_args" default="-x -2.0 -y -0.5 -z 0.0"/>
+    <arg if="$(eval world == 'house')" name="spawn_args" default="-x -3.0 -y 1.0 -z 0.0"/>
+    <arg if="$(eval world == 'autorace')" name="spawn_args" default="-x 0.245 -y -1.787 -z 0.0"/>
+    <env if="$(eval world == 'autorace')" name="GAZEBO_RESOURCE_PATH" value="$(find turtlebot3_gazebo)/models/turtlebot3_autorace/ground_picture"/>
+    <arg if="$(eval world == 'stage_1')" name="spawn_args" default="-x 0.0 -y 0.0 -z 0.0"/>
+    <arg if="$(eval world == 'stage_2')" name="spawn_args" default="-x 0.0 -y 0.0 -z 0.0"/>
+    <arg if="$(eval world == 'stage_3')" name="spawn_args" default="-x 0.0 -y 0.0 -z 0.0"/>
+    <arg if="$(eval world == 'stage_4')" name="spawn_args" default="-x -0.7 -y 0.0 -z 0.0"/>
+
+    <arg if="$(eval world == 'brick_maze_1')" name="spawn_args" default="-x 0.5 -y 0.5 -z 0.0"/>
+    <arg if="$(eval world == 'aro_maze_8')" name="spawn_args" default="-x 0.0 -y 0.0 -z 0.0"/>
+
+    <arg if="$(eval world == 'brick_maze_1')" name="barbie_args" default="-x -1.0 -y 0.0 -z 0.15 -R 0.0 -P 0.0 -Y 0.0"/>
+    <arg if="$(eval world == 'aro_maze_8')" name="barbie_args" default="-x 1.0 -y 0.0 -z 0.15 -R 0.0 -P 0.0 -Y 0.0"/>
+    <arg if="$(eval world == 'world')" name="barbie_args" default="-x 2.4 -y 0.25 -z 0.15 -R 0.0 -P 0.0 -Y 1.047"/>
+    <arg if="$(eval world == 'house')" name="barbie_args" default="-x 1.0 -y 0.0 -z 0.15 -R 0.0 -P 0.0 -Y 0.0"/>
+    <arg if="$(eval world == 'autorace')" name="barbie_args" default="-x -1.0 -y -0.2 -z 0.15 -R 0.0 -P 0.0 -Y 0.0"/>
+    <arg if="$(eval world == 'stage_1')" name="barbie_args" default="-x -1.6 -y -1.8 -z 0.15 -R 0.0 -P 0.0 -Y 0.0"/>
+    <arg if="$(eval world == 'stage_2')" name="barbie_args" default="-x -1.8 -y 1.6 -z 0.15 -R 0.0 -P 0.0 -Y 1.571"/>
+    <arg if="$(eval world == 'stage_3')" name="barbie_args" default="-x 1.0 -y 1.8 -z 0.15 -R 0.0 -P 0.0 -Y 0.0"/>
+    <arg if="$(eval world == 'stage_4')" name="barbie_args" default="-x 2.3 -y -2.0 -z 0.15 -R 0.0 -P 0.0 -Y 1.571"/>
+
+    <arg name="gazebo_world" default="$(eval world in ['autorace', 'house', 'stage_1', 'stage_2', 'stage_3', 'stage_4', 'world'])"/>
+
+    <arg name="robot_frame" default="base_footprint"/>
+    <arg name="control" default="exploration" doc="{exploration, teleop_joy}"/>
+
+    <env name="ROSCONSOLE_FORMAT" value="[${severity} ${walltime} ${node}] ${message}"/>
+    <env name="ROSCONSOLE_STDOUT_LINE_BUFFERED" value="1"/>
+
+    <param name="use_sim_time" value="true"/>
+
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg if="$(arg gazebo_world)"
+             name="world_name" value="$(find turtlebot3_gazebo)/worlds/turtlebot3_$(arg world).world"/>
+        <arg unless="$(arg gazebo_world)"
+             name="world_name" value="$(find aro_sim)/worlds/$(arg world).world"/>
+        <arg name="paused" value="false"/>
+        <arg name="use_sim_time" value="true"/>
+        <arg name="gui" value="$(arg gui)"/>
+        <arg name="headless" value="false"/>
+        <arg name="debug" value="false"/>
+        <arg name="verbose" value="true"/>
+    </include>
+    <param name="robot_description" command="$(find xacro)/xacro --inorder $(find aro_sim)/urdf/turtlebot3_$(arg model).urdf.xacro"/>
+    <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model"
+          args="-urdf -model turtlebot3_$(arg model) $(arg spawn_args) -param robot_description"/>
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
+
+    <include if="$(eval control == 'exploration')"
+             file="$(find exploration)/launch/exploration.launch">
+        <arg name="robot_radius" value="$(arg robot_radius)"/>
+        <arg name="robot_frame" value="$(arg robot_frame)"/>
+    </include>
+
+    <group if="$(eval control == 'teleop_joy')">
+         <include file="$(find aro_sim)/launch/teleop_joy.launch"/>
+         <include file="$(find aro_sim)/launch/teleop_keyboard.launch"/>
+         <include file="$(find aro_slam)/launch/icp_slam_2d.launch"/>
+    </group>
+
+    <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find aro_sim)/config/turtlebot3.rviz"/>
+
+    <param name="barbie_description" command="$(find xacro)/xacro --inorder $(find aro_sim)/urdf/barbie.xacro"/>
+    <node name="spawn_barbie" pkg="gazebo_ros" type="spawn_model"
+          args="-urdf -model barbie $(arg barbie_args) -param barbie_description"/>
+
+    <node name="detector" pkg="barbie_detection" type="detector.py" output="screen">
+	<param name="weights_path" value="$(find barbie_detection)/scripts/trained_weights"/>
+    </node>
+
+</launch>

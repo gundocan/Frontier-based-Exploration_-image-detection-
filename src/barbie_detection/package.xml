@@ -1,0 +1,21 @@
+<package>
+    <name>barbie_detection</name>
+    <version>2018.0.0</version>
+    <description>
+    Barbie detection package for Autonomous Robots course
+    </description>
+    <maintainer email="salanvoj@fel.cvut.cz">Vojtech Salansky</maintainer>
+    <license>BSD</license>
+
+    <url>https://cw.fel.cvut.cz/b182/courses/aro/tutorials/start</url>
+    <author>Vojtech Salansky</author>
+
+    <run_depend>rospy</run_depend>
+    <run_depend>geometry_msgs</run_depend>
+    <run_depend>sensor_msgs</run_depend>
+    <run_depend>message_filters</run_depend>
+    <run_depend>PIL</run_depend>
+    <run_depend>torch</run_depend>
+
+    <buildtool_depend>catkin</buildtool_depend>
+</package>

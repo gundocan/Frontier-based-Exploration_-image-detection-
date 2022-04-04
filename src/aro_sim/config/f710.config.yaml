@@ -1,0 +1,10 @@
+# Logitech Wireless Gamepad F710 (D / Mode 0)
+axis_linear: 1  # Left control forward-back axis
+scale_linear: 0.25
+scale_linear_turbo: 0.5
+
+axis_angular: 0  # Left control left-right axis
+scale_angular: 1.0
+
+enable_button: 1  # A
+enable_turbo_button: 0  # X

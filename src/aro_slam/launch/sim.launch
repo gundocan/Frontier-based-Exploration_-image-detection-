@@ -1,0 +1,26 @@
+<launch>
+    <env name="ROSCONSOLE_FORMAT" value="[${severity} ${walltime} ${node}] ${message}"/>
+    <env name="ROSCONSOLE_STDOUT_LINE_BUFFERED" value="1"/>
+
+    <arg name="world" default="stage_4"/>
+    <arg name="keyboard" default="true"/>
+    <arg name="joy" default="true"/>
+    <arg name="rviz" default="true"/>
+
+    <param name="use_sim_time" value="true"/>
+
+    <include if="$(arg keyboard)" file="$(find aro_sim)/launch/teleop_keyboard.launch"/>
+    <include if="$(arg joy)" file="$(find aro_sim)/launch/teleop_joy.launch"/>
+    <include if="$(arg rviz)" file="$(find aro_slam)/launch/rviz.launch"/>
+
+    <include file="$(find aro_sim)/launch/onlysim.launch">
+        <arg name="gui" value="false"/>
+        <arg name="rviz" value="false"/>
+        <arg name="world" value="$(arg world)"/>
+    </include>
+
+    <include file="$(find aro_slam)/launch/icp_slam_2d.launch">
+        <arg name="odom" value="true"/>
+        <arg name="lidar_frame" default="base_scan"/>
+    </include>
+</launch>

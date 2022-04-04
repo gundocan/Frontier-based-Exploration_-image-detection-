@@ -1,0 +1,23 @@
+<package>
+    <name>aro_slam</name>
+    <version>2019.0.0</version>
+    <description>
+    SLAM package for Autonomous Robotics course.
+    </description>
+    <maintainer email="petrito1@fel.cvut.cz">Tomas Petricek</maintainer>
+    <license>BSD</license>
+
+    <url>https://cw.fel.cvut.cz/b192/courses/aro/tutorials/start</url>
+    <author>Tomas Petricek</author>
+
+    <run_depend>geometry_msgs</run_depend>
+    <run_depend>message_runtime</run_depend>
+    <run_depend>nav_msgs</run_depend>
+    <run_depend>point_cloud_color</run_depend>
+    <run_depend>ros_numpy</run_depend>
+    <run_depend>rospy</run_depend>
+    <run_depend>sensor_msgs</run_depend>
+    <run_depend>tf2_ros</run_depend>
+
+    <buildtool_depend>catkin</buildtool_depend>
+</package>

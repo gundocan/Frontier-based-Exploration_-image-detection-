@@ -1,0 +1,349 @@
+#!/usr/bin/env python
+"""
+Simultaneous localization and mapping (SLAM) based on Iterative Closest Point
+(ICP). In brief, the node receives point clouds which it registers with
+incrementally built map via ICP to estimate transformation between odom and
+map frames. The node operates in 2D, Z coordinate of points in the odom frame
+is discarded.
+
+Note occasional switch of point cloud dimensions, e.g., 3-by-N in ICP but
+N-by-3 in maps or K-D tree indices.
+"""
+from __future__ import absolute_import, division, print_function
+from aro_slam.icp import icp
+from aro_slam.occupancy import OccupancyMap
+from aro_slam.utils import (affine_transform, array, col, cloud_to_msg,
+                            filter_grid, inverse_affine, msg_to_cloud,
+                            PointMap, rotation_angle)
+from geometry_msgs.msg import Transform, TransformStamped
+from nav_msgs.msg import OccupancyGrid
+import numpy as np
+import rospy
+from ros_numpy import msgify, numpify
+from scipy.spatial import cKDTree
+from sensor_msgs.msg import PointCloud2
+from timeit import default_timer as timer
+from tf2_py import TransformException
+import tf2_ros
+
+
+class IcpSlam(object):
+    def __init__(self):
+        # Sensor frame is needed to recover sensor origin for updating
+        # occupancy grid (the cloud need not be in the sensor frame).
+        self.sensor_frame = rospy.get_param('~sensor_frame', 'laser')
+
+        # Odometry frame to track and align (defaults to odom).
+        # It can also be the robot frame, e.g. base_link, if no odometry
+        # is provided.
+        self.odom_frame = rospy.get_param('~odom_frame', 'odom')
+
+        # Fixed map frame, parent of the odometry frame above.
+        self.map_frame = rospy.get_param('~map_frame', 'map')
+
+        # Throw messages older than a threshold [s].
+        self.max_age = rospy.get_param('~max_age', 0.25)
+
+        # Timeout waiting for TF transforms [s].
+        self.timeout = rospy.Duration.from_sec(rospy.get_param('~timeout', 0.25))
+
+        # Wait between map updates to reduce computation [s].
+        # Increasing this interval increases the time needed to update
+        # occupancy grid, e.g. to change a free cell to occupied when obstacle
+        # appears and vice versa.
+        self.map_update_interval = rospy.get_param('~map_update_interval', 0.2)
+
+        # Always update maps even if localization fails? This allows to
+        # bootstrap localization anytime provided that a sufficient confidence
+        # can be built, even if the previous map can no longer be used for
+        # localization due to previous failures and incorrect updates.
+        self.always_updade_maps = rospy.get_param('~always_update_maps', False)
+
+        # Always publish odom-to-map transform even if localization fails?
+        # This may be handy for navigation or visualization in map frame,
+        # so that the best known odom-to-map transform is always available.
+        self.always_publish_tf = rospy.get_param('~always_publish_tf', True)
+
+        # Minimum number of map points to enable localization.
+        self.loc_min_map_points = rospy.get_param('~loc_min_map_points', 50)
+
+        # Minimum number of input points to enable localization.
+        self.loc_min_input_points = rospy.get_param('~loc_min_input_points', 20)
+
+        # Maximum delta rotation to accept the transform from ICP [rad].
+        self.max_delta_rotation = rospy.get_param('~max_delta_rotation', None)
+
+        # Maximum delta translation to accept the transform from ICP [m].
+        self.max_delta_translation = rospy.get_param('~max_delta_translation', None)
+
+        # Maximum mean error on inliers to accept the transform from ICP.
+        self.max_inl_err = rospy.get_param('~max_inl_err', None)
+
+        # Max number of ICP iterations.
+        self.max_iters = rospy.get_param('~max_iters', 50)
+
+        # Ratio of correspondences with lowest nearest-neighbor distances
+        # for which we optimize the criterion in given iteration, i.e., the
+        # inliers. This should correspond to the expected minimum relative
+        # overlap between point clouds. The inlier set may change each
+        # iteration.
+        self.inlier_ratio = rospy.get_param('~inlier_ratio', 0.5)
+
+        # Multiplier of the maximum inlier distance found using
+        # inlier ratio, enlarging or reducing the inlier set for optimization.
+        self.inlier_dist_mult = rospy.get_param('~inlier_dist_mult', 1.0)
+
+        # Occupancy grid resolution .
+        self.occupancy_res = rospy.get_param('~occupancy_res', 0.05)
+
+        # Additive update for seeing trough the cell.
+        self.empty_update = rospy.get_param('~empty_update', -1.0)
+
+        # Additive update for hitting the cell.
+        self.occupied_update = rospy.get_param('~occupied_update', 1.0)
+
+        # Minimum accumulated occupancy value, lower values are clipped at
+        # this value. Avoids overconfident belief in any cell being free.
+        self.min_occupancy = rospy.get_param('~min_occupancy', -10.0)
+
+        # Maximum accumulated occupancy value, higher values are clipped at
+        # this value. Avoids overconfident belief in any cell being occupied.
+        self.max_occupancy = rospy.get_param('~max_occupancy', 10.0)
+
+        # A threshold above which the cell is considered occupied.
+        self.occupied_threshold = rospy.get_param('~occupied_threshold', 5.0)
+
+        # Point map grid filter resolution [m].
+        self.map_grid_res = rospy.get_param('~map_grid_res', 0.05)
+
+        # Maximum number of points int the point map.
+        self.max_map_points = rospy.get_param('~max_map_points', 100000)
+
+        # Point map for localization.
+        self.map = PointMap(grid_res=self.map_grid_res,
+                            max_size=self.max_map_points)
+
+        # The index is separate such that full 3D points can be used in
+        # mapping in spite of only 2D points being used in localization.
+        self.map_index = None
+
+        # The time of previous map update.
+        self.last_update_stamp = None
+
+        # Is the map large enough to enable localization?
+        self.localization_enabled = False
+
+        # Occupancy grid for planning, and noise suppression.
+        self.occupancy = OccupancyMap(self.map_frame,
+                                      resolution=self.occupancy_res,
+                                      empty_update=self.empty_update,
+                                      occupied_update=self.occupied_update,
+                                      min=self.min_occupancy,
+                                      max=self.max_occupancy,
+                                      occupied=self.occupied_threshold)
+
+        self.tf_pub = tf2_ros.TransformBroadcaster()
+        self.tf = tf2_ros.Buffer()
+        self.tf_sub = tf2_ros.TransformListener(self.tf)
+
+        # Current transform from odom to map (odom pose in map).
+        self.odom_to_map = np.eye(4)
+        self.odom_to_map_stamp = None
+
+        # Current number of skipped point clouds, reset when processing of any
+        # cloud is finished.
+        self.skipped = 0
+
+        self.filtered_cloud_pub = rospy.Publisher('filtered_cloud', PointCloud2, queue_size=5)
+        self.registered_cloud_pub = rospy.Publisher('registered_cloud', PointCloud2, queue_size=5)
+        self.inliers_cloud_pub = rospy.Publisher('inliers_cloud', PointCloud2, queue_size=5)
+
+        self.map_pub = rospy.Publisher('point_map', PointCloud2, queue_size=5, latch=True)
+        self.occ_pub = rospy.Publisher('occupancy', OccupancyGrid, queue_size=5, latch=True)
+
+        self.points_sub = rospy.Subscriber('cloud', PointCloud2, self.cloud_cb, queue_size=5)
+
+    def last_update_too_old(self, stamp):
+        return stamp - self.last_update_stamp >= rospy.Duration(self.map_update_interval)
+
+    def check_transform_update(self, T_old, T, inl_err):
+        if (self.max_inl_err is not None
+                and not np.isinf(self.max_inl_err)
+                and inl_err > self.max_inl_err):
+            rospy.logwarn('Mean inlier error higher than threshold: %.3g > %.3g.',
+                          inl_err, self.max_inl_err)
+            return False
+
+        if T is None:
+            rospy.logwarn('Could not find aligning transform.')
+            return False
+
+        assert T_old is not None
+
+        # Skip the check if possible.
+        if ((self.max_delta_rotation is None or np.isinf(self.max_delta_rotation))
+                and (self.max_delta_translation is None or np.isinf(self.max_delta_translation))):
+            return True
+
+        T_delta = np.matmul(T, inverse_affine(T_old))
+        d = T_delta.shape[1] - 1
+        delta_rotation = rotation_angle(T_delta[:d, :d])
+        delta_translation = np.linalg.norm(T_delta[:d, d])
+        if (delta_rotation > self.max_delta_rotation
+                or delta_translation > self.max_delta_translation):
+            rospy.logwarn('Delta rotation or translation above threshold: '
+                          '%.3g > %.3g or %.3g > %.3g.',
+                          delta_rotation, self.max_delta_rotation,
+                          delta_translation, self.max_delta_translation)
+            return False
+
+        rospy.logdebug('Delta rotation: %.3g, delta translation: %.3g.',
+                       delta_rotation, delta_translation)
+        return True
+
+    def cloud_cb(self, msg):
+        t0 = timer()
+
+        stamp = msg.header.stamp
+        age = (rospy.Time.now() - stamp).to_sec()
+        if age > self.max_age:
+            rospy.logwarn_throttle(5.0, 'Skipping message %.2f s old (older than %.2f s).'
+                                   % (age, self.max_age))
+            self.skipped += 1
+            return
+
+        if self.odom_to_map_stamp is not None and self.odom_to_map_stamp >= stamp:
+            rospy.logwarn_throttle(5.0, 'Skipping message older than one previously processed.')
+            self.skipped += 1
+            return
+        self.odom_to_map_stamp = stamp
+
+        try:
+            cloud_to_odom = self.tf.lookup_transform(self.odom_frame, msg.header.frame_id, stamp, self.timeout)
+            cloud_to_odom = numpify(cloud_to_odom.transform)
+        except TransformException as ex:
+            rospy.logwarn_throttle(5.0, 'Could not transform cloud in %s to odom frame %s: %s.'
+                                   % (msg.header.frame_id, self.odom_frame, ex))
+            self.skipped += 1
+            return
+
+        if msg.width * msg.height == 0:
+            rospy.logwarn_throttle(5.0, 'An empty point cloud received.')
+            return
+
+        # Convert point cloud message to 3-by-N array.
+        x = msg_to_cloud(msg)
+        x = affine_transform(cloud_to_odom, x)
+        x = filter_grid(x, self.map_grid_res)
+
+        if self.filtered_cloud_pub.get_num_connections() > 0:
+            msg_filtered = cloud_to_msg(x)
+            msg_filtered.header = msg.header
+            msg_filtered.header.frame_id = self.odom_frame
+            self.filtered_cloud_pub.publish(msg_filtered)
+
+        # Is map large enough to enable localization?
+        if self.map.size() >= self.loc_min_map_points:
+            if not self.localization_enabled:
+                rospy.loginfo('Localization enabled (%i / %i map points).',
+                              self.map.size(), self.loc_min_map_points)
+            self.localization_enabled = True
+        else:
+
+            rospy.logwarn('Localization disabled (%i / %i map points).',
+                          self.map.size(), self.loc_min_map_points)
+            self.localization_enabled = False
+
+        localized = False
+        if self.localization_enabled:
+            num_input_points = x.shape[1]
+            if num_input_points >= self.loc_min_input_points:
+                # Drop z coordinate from the transform for 2D ICP.
+                T_old = np.delete(np.delete(self.odom_to_map, 2, 0), 2, 1)
+                T, inl_err, inl = icp(x[:2, :], self.map.cloud[:2, :],
+                                      y_index=self.map_index,
+                                      max_iters=self.max_iters,
+                                      inlier_ratio=self.inlier_ratio,
+                                      inlier_dist_mult=self.inlier_dist_mult,
+                                      T=T_old)
+
+                if inl is not None and self.inliers_cloud_pub.get_num_connections() > 0:
+                    msg_inliers = cloud_to_msg(x[:, inl])
+                    msg_inliers.header = msg.header
+                    msg_inliers.header.frame_id = self.odom_frame
+                    self.inliers_cloud_pub.publish(msg_inliers)
+
+                if self.check_transform_update(T_old, T, inl_err):
+                    self.odom_to_map[:2, :2] = T[:2, :2]
+                    self.odom_to_map[:2, -1:] = T[:2, -1:]
+                    localized = True
+
+            else:
+                rospy.logwarn('Not enough input points for localization: %i < %i.',
+                              num_input_points, self.loc_min_input_points)
+
+        if localized or self.always_publish_tf:
+            tf_msg = TransformStamped()
+            tf_msg.transform = msgify(Transform, self.odom_to_map)
+            tf_msg.header.stamp = stamp
+            tf_msg.header.frame_id = self.map_frame
+            tf_msg.child_frame_id = self.odom_frame
+            self.tf_pub.sendTransform(tf_msg)
+            self.tf.set_transform(tf_msg, rospy.get_name())
+
+        x = affine_transform(self.odom_to_map, x)
+
+        if localized and self.registered_cloud_pub.get_num_connections() > 0:
+            msg_registered = cloud_to_msg(x)
+            msg_registered.header = msg.header
+            msg_registered.header.frame_id = self.map_frame
+            self.registered_cloud_pub.publish(msg_registered)
+
+        if (localized and self.last_update_too_old(stamp)
+                or not self.localization_enabled
+                or self.always_updade_maps):
+
+            # Update the point map for localization.
+            self.map.update(x)
+            self.last_update_stamp = stamp
+            rospy.logdebug('Map updated at %.3f.', msg.header.stamp.to_sec())
+
+            # Update the occupancy grid.
+            try:
+                sensor_to_map = self.tf.lookup_transform(self.map_frame, self.sensor_frame, stamp)
+                origin = col(array(sensor_to_map.transform.translation))
+                self.occupancy.update(origin, x, stamp)
+            except TransformException as ex:
+                rospy.logwarn_throttle(5., 'Could not get %s origin in map frame %s: %s.'
+                                       % (self.sensor_frame, self.map_frame, ex))
+
+            # Keep only stable map points, in occupied cells with high
+            # confidence.
+            occupied = self.occupancy.occupied(self.map.cloud)
+            self.map.cloud = self.map.cloud[:, occupied]
+
+            # Update map index (once the map update is complete).
+            if not self.map.empty():
+                self.map_index = cKDTree(self.map.cloud[:2, :].T)
+            else:
+                self.map_index = None
+            rospy.loginfo_throttle(5., "Map size: %i." % self.map.size())
+
+            # Publish maps.
+            if self.map_pub.get_num_connections() > 0:
+                msg_map = cloud_to_msg(self.map.cloud)
+                msg_map.header.stamp = stamp
+                msg_map.header.frame_id = self.map_frame
+                self.map_pub.publish(msg_map)
+            if self.occ_pub.get_num_connections() > 0:
+                self.occ_pub.publish(self.occupancy.to_msg())
+
+        rospy.logdebug('Point cloud processed: %.3g s. %i point clouds skipped.',
+                       timer() - t0, self.skipped)
+        self.skipped = 0
+
+
+if __name__ == '__main__':
+    rospy.init_node('icp_slam_2d', log_level=rospy.INFO)
+    node = IcpSlam()
+    rospy.spin()

@@ -1,0 +1,73 @@
+<launch>
+    <!-- Feel free to add some command line arguments and parameters -->
+    <arg name="robot_radius" default="$(eval 0.105 + 0.3)"/>
+    <arg name="robot_frame" default="base_footprint"/>
+    <arg name="odom"       default="true" doc="Odometry must not be published if false."/>
+    <arg name="odom_frame" default="$(eval 'odom' if odom else 'base_footprint')"/>
+    <arg name="lidar_frame" default="base_scan"/>
+
+    <node name="scan_to_point_cloud" pkg="nodelet" type="nodelet"
+          args="standalone point_cloud_color/scan_to_point_cloud"
+          output="log">
+        <rosparam subst_value="true">
+            fixed_frame:      $(arg lidar_frame)
+            tf_timeout:       1.0
+            channel_options:  3
+            scan_queue_size:  2
+            cloud_queue_size: 2
+        </rosparam>
+        <remap from="scan" to="scan"/>
+        <remap from="cloud" to="cloud"/>
+    </node>
+
+    <node name="icp_slam_2d" pkg="aro_slam" type="icp_slam_2d"
+          output="screen">
+        <rosparam subst_value="true">
+            sensor_frame:          $(arg lidar_frame)
+            odom_frame:            $(arg odom_frame)
+            map_frame:             map
+            max_age:               0.25
+            timeout:               0.25
+            map_update_interval:   0.15
+            always_update_maps:    false
+            always_publish_tf:     true
+            loc_min_map_points:    50
+            loc_min_input_points:  20
+            max_iters:             50
+            max_delta_rotation:    .inf
+            max_delta_translation: .inf
+            max_inl_err:           0.2
+            inlier_ratio:          0.75
+            inlier_dist_mult:      1.0
+            occupancy_res:         0.05
+            empty_update:         -1.0
+            occupied_update:       1.0
+            min_occupancy:         -8.0
+            max_occupancy:         8.0
+            occupied_threshold:    1.0
+            map_grid_res:          0.1
+            max_map_points:        5000
+        </rosparam>
+        <remap from="cloud" to="cloud"/>
+        <remap from="filtered_cloud" to="filtered_cloud"/>
+        <remap from="registered_cloud" to="registered_cloud"/>
+        <remap from="inliers_cloud" to="inliers_cloud"/>
+        <remap from="point_map" to="point_map"/>
+        <remap from="occupancy" to="occupancy"/>
+    </node>
+    
+    <node name="path_planner" pkg="exploration" type="planner.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>
+    </node>
+    <node name="frontier_explorer" pkg="exploration" type="frontier.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>
+    </node>
+    <node name="path_follower" pkg="exploration" type="path_follower.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>
+    </node>    
+    <node name="explorer" pkg="exploration" type="explorer.py" output="screen">
+        <param name="robot_diameter" value="0.43"/>     
+    </node>  
+</launch>   
+        
+

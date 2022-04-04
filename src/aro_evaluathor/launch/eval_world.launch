@@ -1,0 +1,15 @@
+<launch>
+    <arg name="world" default="aro_maze_8" doc="{autorace, house, stage_1, stage_2, stage_3, stage_4, world}"/>
+    <arg name="run_mode" default="single" doc="{manual, single}"/>
+    <arg name="spawn_mode" default="list" doc="{fixed, random, list}"/>
+    <arg name="time_limit" default="180"/>
+    <arg name="time_interval" default="30"/>
+
+    <node name="evaluathor" pkg="aro_evaluathor" type="run_eval_student.py" output="screen">
+        <param name="map_name" value="$(arg world)"/>
+        <param name="run_mode" value="$(arg run_mode)"/>
+        <param name="spawn_mode" value="$(arg spawn_mode)"/>
+        <param name="time_limit" value="$(arg time_limit)"/>
+        <param name="time_interval" value="$(arg time_interval)"/>
+    </node>
+</launch>

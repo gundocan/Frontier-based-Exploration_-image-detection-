@@ -1,0 +1,30 @@
+<launch>
+    <env name="ROSCONSOLE_FORMAT" value="[${severity} ${walltime} ${node}] ${message}"/>
+    <env name="ROSCONSOLE_STDOUT_LINE_BUFFERED" value="1"/>
+
+    <arg name="bag"   default="$(find aro_slam)/data/2018-12-10-15-21-04_filtered.bag"/>
+    <arg name="start" default="0.0"/>
+    <arg name="rate"  default="1.0"/>
+    <arg name="odom"  default="true"/>
+    <arg name="model" default="false"/>
+    <arg name="rviz"  default="true"/>
+
+    <param name="use_sim_time" value="true"/>
+
+    <node name="rosbag_play" pkg="rosbag" type="play"
+          args="--clock -d 1.0 -s $(arg start) -r $(arg rate) -k $(arg bag)">
+        <remap unless="$(arg odom)" from="tf" to="tf_old"/>
+    </node>
+    <node unless="$(arg odom)" name="tf_remap" pkg="topic_tools" type="transform"
+          args="/tf_old /tf tf2_msgs/TFMessage
+                'm if m.transforms[0].child_frame_id != &quot;base_link&quot; else None'
+                --wait-for-start">
+    </node>
+
+    <include file="$(find aro_slam)/launch/icp_slam_2d.launch">
+        <arg name="odom" value="$(arg odom)"/>
+    </include>
+
+    <include if="$(arg model)" file="$(find aro_slam)/launch/model.launch"/>
+    <include if="$(arg rviz)"  file="$(find aro_slam)/launch/rviz.launch"/>
+</launch>
